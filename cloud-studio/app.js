@@ -200,3 +200,6 @@ $("open-actions").addEventListener("click",()=>window.open("https://github.com/B
 $("copy-repo").addEventListener("click",()=>{
   try{copyText(slugFromInput($("repo").value));}catch(e){setStatus(String(e.message),"error");}
 });
+
+const cloudNav=document.querySelector('a[href="#workflow"]');
+if(cloudNav)cloudNav.addEventListener('click',()=>showTab('cloud'));
