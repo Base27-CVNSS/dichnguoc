@@ -1,0 +1,77 @@
+name: REA Cloud - JavaScript and Electron
+on:
+  workflow_dispatch:
+    inputs:
+      target_repo:
+        description: "Public repository (owner/repo)"
+        required: true
+        type: string
+        default: "electron/electron-quick-start"
+permissions:
+  contents: read
+concurrency:
+  group: rea-cloud
+  cancel-in-progress: false
+jobs:
+  analyze:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Validate input
+        env:
+          TARGET_REPO: ${{ inputs.target_repo }}
+        run: |
+          python3 - <<'PY'
+          import os, re, sys
+          s = os.environ["TARGET_REPO"].strip()
+          a = s.split("/")
+          if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+",s) or any(x in (".","..") or ".." in x or x.startswith("-") for x in a):
+              sys.exit("Enter a public repository: owner/repo")
+          with open(os.environ["GITHUB_ENV"],"a") as f: f.write("TARGET=" + s + "\n")
+          PY
+      - name: Node.js on cloud runner
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.11.0"
+      - name: Read public source without running it
+        env:
+          GIT_LFS_SKIP_SMUDGE: "1"
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          git -c protocol.file.allow=never clone --depth 1 --no-tags -- \
+            "https://github.com/$TARGET.git" "$GITHUB_WORKSPACE/target"
+          kb="$(du -sk "$GITHUB_WORKSPACE/target" | cut -f1)"
+          test "$kb" -le 307200 || { echo "::error::Repository exceeds 300 MiB"; exit 1; }
+          git -C "$GITHUB_WORKSPACE/target" rev-parse HEAD > "$RUNNER_TEMP/commit.txt"
+      - name: Execute REA JavaScript static analyzer
+        env:
+          CI: "true"
+        run: |
+          mkdir -p reports
+          set +e
+          timeout --signal=TERM --kill-after=10s 420s \
+            npx --yes rea-agents@6.7.0 analyze-javascript-application \
+            "$GITHUB_WORKSPACE/target" --json > reports/rea-output.json 2> reports/rea-stderr.txt
+          result=$?
+          set -e
+          echo "$result" > reports/exit-code.txt
+          cp "$RUNNER_TEMP/commit.txt" reports/target-commit.txt
+          {
+            echo "## REA Cloud"
+            echo "Repository: $TARGET"
+            echo "Exit code: $result"
+            echo "Download artifact **rea-evidence** for full results."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload evidence even after REA failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rea-evidence
+          path: reports/
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Validate evidence
+        run: |
+          test -f reports/exit-code.txt
+          test "$(cat reports/exit-code.txt)" = "0"
+          python3 -m json.tool reports/rea-output.json > /dev/null
